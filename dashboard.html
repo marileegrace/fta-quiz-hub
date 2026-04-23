@@ -82,9 +82,10 @@ tr:hover td{background:#faf8f5}
 
 <div id="setupBanner" class="setup-banner" style="display:none">
   <h2>Connect Your Google Sheet</h2>
-  <p>Paste your Google Apps Script URL below. This is the same URL you used in the student quiz hub.<br>
-  The dashboard will fetch results directly from your Google Sheet.</p>
-  <input type="text" id="urlInput" placeholder="https://script.google.com/macros/s/.../exec" />
+  <p>Open your <b>FTA Quiz Results</b> Google Sheet. Copy the Sheet ID from the URL bar — it's the long string between <code>/d/</code> and <code>/edit</code>.<br>
+  Example: docs.google.com/spreadsheets/d/<b style="color:var(--gd)">THIS_PART</b>/edit</p>
+  <p style="margin-top:8px;font-size:12px;color:#666">Also make sure the sheet is published: <b>File → Share → Publish to web → Publish</b></p>
+  <input type="text" id="urlInput" placeholder="Paste your Google Sheet ID here" />
   <br>
   <button onclick="saveUrl()">Connect</button>
 </div>
@@ -94,89 +95,82 @@ tr:hover td{background:#faf8f5}
 </div>
 
 <script>
-var SHEET_URL = "";
+var SHEET_ID = "";
 var allData = [];
-var currentView = "overview"; // overview | student
+var currentView = "overview";
 var currentStudent = null;
 
-// Persist URL
 function loadUrl() {
-  try { SHEET_URL = localStorage.getItem("fta_dash_url") || ""; } catch(e) {}
-  if (!SHEET_URL) {
+  try { SHEET_ID = localStorage.getItem("fta_dash_sheet_id") || ""; } catch(e) {}
+  if (!SHEET_ID) {
     document.getElementById("setupBanner").style.display = "block";
-    document.getElementById("app").innerHTML = '<div class="empty">Enter your Google Apps Script URL above to get started.</div>';
+    document.getElementById("app").innerHTML = '<div class="empty">Enter your Google Sheet ID above to get started.</div>';
   }
 }
 function saveUrl() {
   var v = document.getElementById("urlInput").value.trim();
   if (!v) return;
-  SHEET_URL = v;
-  try { localStorage.setItem("fta_dash_url", v); } catch(e) {}
+  // If they pasted a full URL, extract the ID
+  var match = v.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  SHEET_ID = match ? match[1] : v;
+  try { localStorage.setItem("fta_dash_sheet_id", SHEET_ID); } catch(e) {}
   document.getElementById("setupBanner").style.display = "none";
   fetchData();
 }
 
 function fetchData() {
-  if (!SHEET_URL) { loadUrl(); return; }
+  if (!SHEET_ID) { loadUrl(); return; }
   document.getElementById("app").innerHTML = '<div class="loading"><div class="spin"></div><p style="margin-top:12px">Loading results...</p></div>';
 
-  // Use a hidden iframe to fetch data (bypasses CORS redirect issues)
-  var iframeId = "fetchFrame";
-  var old = document.getElementById(iframeId);
-  if (old) old.remove();
+  // Read from published Google Sheet using the visualization API
+  var url = "https://docs.google.com/spreadsheets/d/" + SHEET_ID + "/gviz/tq?tqx=out:json";
 
-  var iframe = document.createElement("iframe");
-  iframe.id = iframeId;
-  iframe.style.display = "none";
-  document.body.appendChild(iframe);
-
-  // Set up a message listener for the iframe to send data back
-  var timeout = setTimeout(function() {
-    document.getElementById("app").innerHTML = '<div class="empty">Timed out connecting to Google Sheet. Try refreshing.</div>';
-    document.getElementById("setupBanner").style.display = "block";
-  }, 15000);
-
-  // Poll the iframe for content (since we can't use postMessage cross-origin)
-  iframe.onload = function() {
-    clearTimeout(timeout);
-    try {
-      var text = iframe.contentDocument.body.innerText || iframe.contentDocument.body.textContent;
-      var json = JSON.parse(text);
-      if (json.status === "ok" && json.data) {
-        allData = json.data;
-        if (currentView === "student" && currentStudent) showStudent(currentStudent);
-        else renderOverview();
-      } else {
-        document.getElementById("app").innerHTML = '<div class="empty">Error: ' + (json.message || "Unknown") + '</div>';
-      }
-    } catch(e) {
-      // iframe cross-origin blocked — fall back to JSONP
-      fetchDataJSONP();
-    }
-    iframe.remove();
-  };
-  iframe.src = SHEET_URL;
-}
-
-function fetchDataJSONP() {
-  var cbName = "_ftaCb" + Date.now();
+  // Use JSONP-style approach (Google Visualization API returns callback-wrapped JSON)
   var script = document.createElement("script");
-  window[cbName] = function(json) {
-    delete window[cbName];
+  script.src = url;
+
+  // The Visualization API wraps response in google.visualization.Query.setResponse(...)
+  window.google = window.google || {};
+  window.google.visualization = window.google.visualization || {};
+  window.google.visualization.Query = window.google.visualization.Query || {};
+  window.google.visualization.Query.setResponse = function(resp) {
     script.remove();
-    if (json && json.status === "ok" && json.data) {
-      allData = json.data;
+    try {
+      if (resp.status === "error") {
+        document.getElementById("app").innerHTML = '<div class="empty">Error reading sheet. Make sure you published it:<br><b>File → Share → Publish to web → Publish</b></div>';
+        document.getElementById("setupBanner").style.display = "block";
+        return;
+      }
+      var table = resp.table;
+      var headers = [];
+      for (var c = 0; c < table.cols.length; c++) {
+        headers.push(table.cols[c].label || table.cols[c].id);
+      }
+      var rows = [];
+      for (var r = 0; r < table.rows.length; r++) {
+        var row = {};
+        for (var c2 = 0; c2 < table.rows[r].c.length; c2++) {
+          var cell = table.rows[r].c[c2];
+          var val = cell ? (cell.v !== null && cell.v !== undefined ? cell.v : "") : "";
+          // Handle date values from Google Sheets
+          if (typeof val === "string" && val.indexOf("Date(") === 0) {
+            val = new Date(eval("new " + val)).toISOString();
+          }
+          row[headers[c2]] = val;
+        }
+        rows.push(row);
+      }
+      allData = rows;
       if (currentView === "student" && currentStudent) showStudent(currentStudent);
       else renderOverview();
-    } else {
-      document.getElementById("app").innerHTML = '<div class="empty">Error loading data.</div>';
+    } catch(e) {
+      document.getElementById("app").innerHTML = '<div class="empty">Error parsing sheet data: ' + e.message + '</div>';
     }
   };
-  script.src = SHEET_URL + "?callback=" + cbName;
+
   script.onerror = function() {
-    delete window[cbName];
     script.remove();
-    document.getElementById("app").innerHTML = '<div class="empty">Could not connect. Check your URL and try again.</div>';
+    document.getElementById("app").innerHTML = '<div class="empty">Could not load sheet. Check your Sheet ID and make sure it\'s published to web.</div>';
     document.getElementById("setupBanner").style.display = "block";
   };
   document.body.appendChild(script);

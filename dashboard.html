@@ -119,21 +119,67 @@ function saveUrl() {
 function fetchData() {
   if (!SHEET_URL) { loadUrl(); return; }
   document.getElementById("app").innerHTML = '<div class="loading"><div class="spin"></div><p style="margin-top:12px">Loading results...</p></div>';
-  fetch(SHEET_URL, { redirect: "follow" })
-    .then(function(r) { return r.json(); })
-    .then(function(json) {
+
+  // Use a hidden iframe to fetch data (bypasses CORS redirect issues)
+  var iframeId = "fetchFrame";
+  var old = document.getElementById(iframeId);
+  if (old) old.remove();
+
+  var iframe = document.createElement("iframe");
+  iframe.id = iframeId;
+  iframe.style.display = "none";
+  document.body.appendChild(iframe);
+
+  // Set up a message listener for the iframe to send data back
+  var timeout = setTimeout(function() {
+    document.getElementById("app").innerHTML = '<div class="empty">Timed out connecting to Google Sheet. Try refreshing.</div>';
+    document.getElementById("setupBanner").style.display = "block";
+  }, 15000);
+
+  // Poll the iframe for content (since we can't use postMessage cross-origin)
+  iframe.onload = function() {
+    clearTimeout(timeout);
+    try {
+      var text = iframe.contentDocument.body.innerText || iframe.contentDocument.body.textContent;
+      var json = JSON.parse(text);
       if (json.status === "ok" && json.data) {
         allData = json.data;
         if (currentView === "student" && currentStudent) showStudent(currentStudent);
         else renderOverview();
       } else {
-        document.getElementById("app").innerHTML = '<div class="empty">Error loading data: ' + (json.message || "Unknown error") + '</div>';
+        document.getElementById("app").innerHTML = '<div class="empty">Error: ' + (json.message || "Unknown") + '</div>';
       }
-    })
-    .catch(function(err) {
-      document.getElementById("app").innerHTML = '<div class="empty">Could not connect. Check your URL and try again.<br><br><small>' + err + '</small></div>';
-      document.getElementById("setupBanner").style.display = "block";
-    });
+    } catch(e) {
+      // iframe cross-origin blocked — fall back to JSONP
+      fetchDataJSONP();
+    }
+    iframe.remove();
+  };
+  iframe.src = SHEET_URL;
+}
+
+function fetchDataJSONP() {
+  var cbName = "_ftaCb" + Date.now();
+  var script = document.createElement("script");
+  window[cbName] = function(json) {
+    delete window[cbName];
+    script.remove();
+    if (json && json.status === "ok" && json.data) {
+      allData = json.data;
+      if (currentView === "student" && currentStudent) showStudent(currentStudent);
+      else renderOverview();
+    } else {
+      document.getElementById("app").innerHTML = '<div class="empty">Error loading data.</div>';
+    }
+  };
+  script.src = SHEET_URL + "?callback=" + cbName;
+  script.onerror = function() {
+    delete window[cbName];
+    script.remove();
+    document.getElementById("app").innerHTML = '<div class="empty">Could not connect. Check your URL and try again.</div>';
+    document.getElementById("setupBanner").style.display = "block";
+  };
+  document.body.appendChild(script);
 }
 
 function pctClass(p) { return p >= 80 ? "hi" : p >= 60 ? "md" : "lo"; }

@@ -1018,7 +1018,18 @@ function logToSheet(data) {
         return { qid: a.qid, picked: a.sel, correct: a.cor, ok: a.ok };
       }))
     };
-    navigator.sendBeacon(SHEET_URL, new Blob([JSON.stringify(payload)], { type: "text/plain" }));
+    // Use GET via image tag to bypass CORS (Google Apps Script redirects break POST)
+    var params = "action=log" +
+      "&name=" + encodeURIComponent(payload.name) +
+      "&module=" + encodeURIComponent(payload.module) +
+      "&topic=" + encodeURIComponent(payload.topic) +
+      "&score=" + encodeURIComponent(payload.score) +
+      "&total=" + encodeURIComponent(payload.total) +
+      "&percent=" + encodeURIComponent(payload.percent) +
+      "&layer=" + encodeURIComponent(payload.layer) +
+      "&date=" + encodeURIComponent(payload.date) +
+      "&details=" + encodeURIComponent(payload.details);
+    new Image().src = SHEET_URL + "?" + params;
   } catch(e) { /* silent fail — don't disrupt quiz */ }
 }
 
